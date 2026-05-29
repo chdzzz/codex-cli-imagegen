@@ -1,0 +1,6 @@
+.codex/
+auth.json
+*.log
+generated-images/
+codex-imagegen-output/
+*.tmp
