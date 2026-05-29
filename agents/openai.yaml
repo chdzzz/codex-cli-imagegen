@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex CLI Imagegen"
+  short_description: "Generate images through Codex CLI's built-in GPT Image 2 flow."
+  default_prompt: "Use $codex-cli-imagegen to generate an image through Codex CLI image generation."
