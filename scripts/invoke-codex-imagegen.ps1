@@ -194,6 +194,13 @@ if ($codex.Version) {
 Write-Host "Output directory: $resolvedOutDir"
 Write-Host "Working directory: $resolvedWorkDir"
 
+if ($LoginFirst) {
+    & $CodexCommand login
+    if ($LASTEXITCODE -ne 0) {
+        throw "codex login failed with exit code $LASTEXITCODE."
+    }
+}
+
 if ($CheckOnly) {
     try {
         & $CodexCommand login status
@@ -204,13 +211,6 @@ if ($CheckOnly) {
         Write-Host "Generated-images fallback: $generatedImagesDir"
     }
     exit 0
-}
-
-if ($LoginFirst) {
-    & $CodexCommand login
-    if ($LASTEXITCODE -ne 0) {
-        throw "codex login failed with exit code $LASTEXITCODE."
-    }
 }
 
 $before = @{}
