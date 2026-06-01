@@ -18,6 +18,8 @@ param(
 
     [string]$Sandbox = "workspace-write",
 
+    [int]$TimeoutSeconds = 900,
+
     [switch]$NoSkipGitRepoCheck,
 
     [switch]$NoGeneratedImagesFallback,
@@ -179,6 +181,59 @@ function Get-UniqueDestination {
     throw "Could not choose a destination filename for '$FileName'."
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    try {
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)) {
+            Stop-ProcessTree -ProcessId $child.ProcessId
+        }
+    } catch {
+        Write-Verbose "Could not enumerate child processes for ${ProcessId}: $($_.Exception.Message)"
+    }
+
+    try {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Verbose "Could not stop process ${ProcessId}: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-CodexWithStdin {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$InputText,
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [int]$TimeoutSeconds = 900
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Command
+    $psi.Arguments = ($Arguments -join " ")
+    $psi.WorkingDirectory = $Directory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $process.StandardInput.Write($InputText)
+    $process.StandardInput.Close()
+
+    if ($TimeoutSeconds -gt 0) {
+        if (-not $process.WaitFor($TimeoutSeconds * 1000)) {
+            Write-Warning "Codex CLI timed out after $TimeoutSeconds seconds. Stopping the process and scanning for generated images."
+            Stop-ProcessTree -ProcessId $process.Id
+            return [pscustomobject]@{ ExitCode = 124; TimedOut = $true }
+        }
+    } else {
+        $process.WaitForExit()
+    }
+
+    return [pscustomobject]@{ ExitCode = $process.ExitCode; TimedOut = $false }
+}
+
 $codex = Resolve-CodexCommand -ExplicitCommand $CodexCommand
 $CodexCommand = $codex.Path
 
@@ -241,6 +296,8 @@ if ($ExtraInstruction.Trim().Length -gt 0) {
 
 $started = Get-Date
 Push-Location -LiteralPath $resolvedWorkDir
+$exitCode = 0
+$timedOut = $false
 try {
     if ($Interactive) {
         $codexArgs = @()
@@ -248,16 +305,18 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($Sandbox)) { $codexArgs += @("-s", $Sandbox) }
         $codexArgs += $message
         & $CodexCommand @codexArgs
+        $exitCode = $LASTEXITCODE
     } else {
         $codexArgs = @()
         if (-not [string]::IsNullOrWhiteSpace($ApprovalPolicy)) { $codexArgs += @("-a", $ApprovalPolicy) }
         if (-not [string]::IsNullOrWhiteSpace($Sandbox)) { $codexArgs += @("-s", $Sandbox) }
         $codexArgs += "exec"
         if (-not $NoSkipGitRepoCheck) { $codexArgs += "--skip-git-repo-check" }
-        $codexArgs += $message
-        & $CodexCommand @codexArgs
+        $codexArgs += "-"
+        $result = Invoke-CodexWithStdin -Command $CodexCommand -Arguments $codexArgs -InputText $message -Directory $resolvedWorkDir -TimeoutSeconds $TimeoutSeconds
+        $exitCode = $result.ExitCode
+        $timedOut = $result.TimedOut
     }
-    $exitCode = $LASTEXITCODE
 } finally {
     Pop-Location
 }
@@ -289,6 +348,11 @@ if ($newFiles.Count -eq 0) {
 $newFiles | Sort-Object LastWriteTime | ForEach-Object { $_.FullName }
 
 if ($exitCode -ne 0) {
+    if ($timedOut) {
+        Write-Warning "Codex CLI timed out after image files were detected; treating detected files as the result."
+        exit 0
+    }
+
     Write-Warning "Codex CLI exited with code $exitCode after image files were detected."
     exit $exitCode
 }
