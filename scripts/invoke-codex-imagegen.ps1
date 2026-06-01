@@ -12,6 +12,10 @@ param(
 
     [string]$ExtraInstruction = "",
 
+    [string]$RequestedSize = "",
+
+    [switch]$RequireExactSize,
+
     [string]$WorkDir = (Get-Location).Path,
 
     [string]$ApprovalPolicy = "never",
@@ -105,6 +109,144 @@ function Get-ImageFiles {
 
     return @(Get-ChildItem -LiteralPath $Directory -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() })
+}
+
+function ConvertFrom-BigEndianUInt16 {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][int]$Offset
+    )
+
+    return (($Bytes[$Offset] -shl 8) -bor $Bytes[$Offset + 1])
+}
+
+function ConvertFrom-BigEndianUInt32 {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][int]$Offset
+    )
+
+    return (($Bytes[$Offset] -shl 24) -bor ($Bytes[$Offset + 1] -shl 16) -bor ($Bytes[$Offset + 2] -shl 8) -bor $Bytes[$Offset + 3])
+}
+
+function ConvertFrom-LittleEndianUInt24 {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][int]$Offset
+    )
+
+    return ($Bytes[$Offset] -bor ($Bytes[$Offset + 1] -shl 8) -bor ($Bytes[$Offset + 2] -shl 16))
+}
+
+function Get-ImageDimensions {
+    param([Parameter(Mandatory = $true)]$File)
+
+    $path = if ($File -is [string]) { $File } else { $File.FullName }
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -lt 24) {
+        return $null
+    }
+
+    $isPng = ($bytes[0] -eq 0x89 -and $bytes[1] -eq 0x50 -and $bytes[2] -eq 0x4E -and $bytes[3] -eq 0x47)
+    if ($isPng -and $bytes.Length -ge 24) {
+        return [pscustomobject]@{
+            Width  = ConvertFrom-BigEndianUInt32 -Bytes $bytes -Offset 16
+            Height = ConvertFrom-BigEndianUInt32 -Bytes $bytes -Offset 20
+        }
+    }
+
+    $isJpeg = ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8)
+    if ($isJpeg) {
+        $offset = 2
+        while ($offset -lt ($bytes.Length - 9)) {
+            while ($offset -lt $bytes.Length -and $bytes[$offset] -ne 0xFF) {
+                $offset++
+            }
+            while ($offset -lt $bytes.Length -and $bytes[$offset] -eq 0xFF) {
+                $offset++
+            }
+            if ($offset -ge $bytes.Length) {
+                break
+            }
+
+            $marker = $bytes[$offset]
+            $offset++
+            if ($marker -eq 0xD9 -or $marker -eq 0xDA) {
+                break
+            }
+            if ($offset + 1 -ge $bytes.Length) {
+                break
+            }
+
+            $segmentLength = ConvertFrom-BigEndianUInt16 -Bytes $bytes -Offset $offset
+            if ($segmentLength -lt 2 -or ($offset + $segmentLength) -gt $bytes.Length) {
+                break
+            }
+
+            if (($marker -ge 0xC0 -and $marker -le 0xC3) -or
+                ($marker -ge 0xC5 -and $marker -le 0xC7) -or
+                ($marker -ge 0xC9 -and $marker -le 0xCB) -or
+                ($marker -ge 0xCD -and $marker -le 0xCF)) {
+                return [pscustomobject]@{
+                    Width  = ConvertFrom-BigEndianUInt16 -Bytes $bytes -Offset ($offset + 5)
+                    Height = ConvertFrom-BigEndianUInt16 -Bytes $bytes -Offset ($offset + 3)
+                }
+            }
+
+            $offset += $segmentLength
+        }
+    }
+
+    $isWebp = ($bytes.Length -ge 30 -and
+        [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -eq "RIFF" -and
+        [System.Text.Encoding]::ASCII.GetString($bytes, 8, 4) -eq "WEBP")
+    if ($isWebp) {
+        $chunkType = [System.Text.Encoding]::ASCII.GetString($bytes, 12, 4)
+        if ($chunkType -eq "VP8X" -and $bytes.Length -ge 30) {
+            return [pscustomobject]@{
+                Width  = (ConvertFrom-LittleEndianUInt24 -Bytes $bytes -Offset 24) + 1
+                Height = (ConvertFrom-LittleEndianUInt24 -Bytes $bytes -Offset 27) + 1
+            }
+        }
+    }
+
+    return $null
+}
+
+function Resolve-RequestedDimensions {
+    param(
+        [string]$RequestedSize,
+        [string]$Prompt
+    )
+
+    $candidate = $RequestedSize
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $match = [regex]::Match($Prompt, "(?i)\b(?<width>\d{1,5})\s*[x×]\s*(?<height>\d{1,5})\b")
+        if ($match.Success) {
+            $candidate = "$($match.Groups["width"].Value)x$($match.Groups["height"].Value)"
+        } elseif ($Prompt -match "(?i)\b4k\b") {
+            if ($Prompt -match "(?i)portrait|vertical") {
+                $candidate = "2160x3840"
+            } else {
+                $candidate = "3840x2160"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $null
+    }
+
+    $sizeMatch = [regex]::Match($candidate, "^\s*(?<width>\d{1,5})\s*[x×]\s*(?<height>\d{1,5})\s*$")
+    if (-not $sizeMatch.Success) {
+        throw "Requested size '$candidate' is invalid. Use WIDTHxHEIGHT, for example 3840x2160."
+    }
+
+    return [pscustomobject]@{
+        Width  = [int]$sizeMatch.Groups["width"].Value
+        Height = [int]$sizeMatch.Groups["height"].Value
+        Text   = "{0}x{1}" -f $sizeMatch.Groups["width"].Value, $sizeMatch.Groups["height"].Value
+    }
 }
 
 function Get-CodexHome {
@@ -579,6 +721,7 @@ $CodexCommand = $codex.Path
 
 $resolvedWorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 $resolvedOutDir = Get-FullPath -Path $OutDir
+$requestedDimensions = Resolve-RequestedDimensions -RequestedSize $RequestedSize -Prompt $Prompt
 if (-not $CheckOnly) {
     New-Item -ItemType Directory -Path $resolvedOutDir -Force | Out-Null
     $resolvedOutDir = (Resolve-Path -LiteralPath $resolvedOutDir).Path
@@ -595,6 +738,9 @@ if ($codex.Version) {
 }
 Write-Host "Output directory: $resolvedOutDir"
 Write-Host "Working directory: $resolvedWorkDir"
+if ($requestedDimensions) {
+    Write-Host "Requested native size: $($requestedDimensions.Text)"
+}
 
 if ($LoginFirst) {
     & $CodexCommand login
@@ -627,11 +773,23 @@ foreach ($directory in $generatedImagesDirs) {
     }
 }
 
+$resolutionInstruction = ""
+if ($requestedDimensions) {
+    $resolutionInstruction = @"
+
+Native resolution requirement:
+- Create the image at exactly $($requestedDimensions.Text) pixels.
+- This must be the actual image metadata size, not a post-upscaled or resized copy.
+- If the built-in image generator exposes any size or resolution control, use $($requestedDimensions.Text) directly.
+"@
+}
+
 $message = @"
 `$imagegen
 Generate the requested image using Codex CLI's built-in image generation.
 Save the final image file under this absolute directory:
 $resolvedOutDir
+$resolutionInstruction
 
 User prompt:
 $Prompt
@@ -704,7 +862,30 @@ if ($newFiles.Count -eq 0) {
     exit 0
 }
 
-$newFiles | Sort-Object LastWriteTime | ForEach-Object { $_.FullName }
+$sortedNewFiles = @($newFiles | Sort-Object LastWriteTime)
+$matchingSizeCount = 0
+foreach ($file in $sortedNewFiles) {
+    $dimensions = Get-ImageDimensions -File $file
+    if ($dimensions) {
+        Write-Host ("Image dimensions: {0}x{1} {2}" -f $dimensions.Width, $dimensions.Height, $file.FullName)
+        if ($requestedDimensions -and $dimensions.Width -eq $requestedDimensions.Width -and $dimensions.Height -eq $requestedDimensions.Height) {
+            $matchingSizeCount++
+        }
+    } else {
+        Write-Warning "Could not read image dimensions for '$($file.FullName)'."
+    }
+
+    $file.FullName
+}
+
+if ($requestedDimensions -and $matchingSizeCount -eq 0) {
+    $message = "No generated image matched requested native size $($requestedDimensions.Text). Codex CLI may have ignored the resolution request."
+    if ($RequireExactSize) {
+        throw $message
+    }
+
+    Write-Warning $message
+}
 
 if ($exitCode -ne 0) {
     if ($timedOut) {

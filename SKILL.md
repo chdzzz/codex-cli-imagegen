@@ -77,6 +77,8 @@ Important options:
 - `-CodexCommand`: alternate executable path or command name.
 - `-Interactive`: use `codex "<prompt>"` instead of `codex exec "<prompt>"` for older CLI builds.
 - `-CheckOnly`: resolve Codex CLI, print version/login diagnostics, and do not generate an image.
+- `-RequestedSize`: requested native pixel size, such as `3840x2160`. If omitted, the helper infers common explicit sizes from the prompt, including landscape `4K` as `3840x2160`.
+- `-RequireExactSize`: fail when generated images do not match the requested native pixel size.
 - `-WorkDir`: working directory for `codex exec`.
 - `-ApprovalPolicy`: Codex global approval policy; defaults to `never` for non-interactive runs.
 - `-Sandbox`: Codex global sandbox mode; defaults to `workspace-write`.
@@ -90,6 +92,8 @@ Important options:
 If PowerShell refuses to run `.ps1` files, invoke the script with `powershell -NoProfile -ExecutionPolicy Bypass -File <script> ...`. This bypass is process-local and does not change the user's machine policy. On macOS/Linux, use `pwsh -File <script> ...`.
 
 If the script reports no new files, inspect the CLI output. Codex may have saved the file elsewhere, the image generation may still be in progress, or the model may need a more explicit save-path instruction.
+
+If the user asks for native 4K while staying on Codex CLI OAuth, pass `-RequestedSize "3840x2160" -RequireExactSize` for landscape or `-RequestedSize "2160x3840" -RequireExactSize` for portrait. The helper will request that size through the `$imagegen` prompt and validate the actual output metadata. Current Codex CLI builds may still return fixed native sizes such as `1672x941`; report that as a CLI size-control limitation instead of silently upscaling.
 
 After changing the helper, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-helper-tests.ps1` on Windows or `pwsh -File ./tests/run-helper-tests.ps1` on macOS/Linux. The mock suite does not call the real Codex service.
 

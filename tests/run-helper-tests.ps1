@@ -132,6 +132,16 @@ function Invoke-Helper {
     }
 }
 
+function Invoke-HelperExpectFailure {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $psArgs = @(Get-PowerShellFileArgs -ScriptPath $helper) + @($Arguments)
+    & $powerShell @psArgs
+    if ($LASTEXITCODE -eq 0) {
+        throw "Helper unexpectedly succeeded for arguments: $($Arguments -join ' ')"
+    }
+}
+
 function Restore-TestEnvironment {
     foreach ($name in $envNames) {
         if ($null -eq $originalEnv[$name]) {
@@ -166,6 +176,33 @@ try {
         "-StableSeconds", "0"
     )
     Assert-True -Condition ((Get-ChildItem -LiteralPath $directOut -Filter *.png -File).Count -ge 1) -Message "Direct output image was not detected."
+
+    $strictSizeOut = Join-Path $testRoot "strict-size-output"
+    $env:MOCK_CODEX_MODE = "direct"
+    $env:MOCK_CODEX_HANG = ""
+    Invoke-Helper -Arguments @(
+        "-Prompt", "strict mock image",
+        "-CodexCommand", $mockCommand,
+        "-OutDir", $strictSizeOut,
+        "-RequestedSize", "1x1",
+        "-RequireExactSize",
+        "-TimeoutSeconds", "30",
+        "-PollSeconds", "1",
+        "-StableSeconds", "0"
+    )
+    Assert-True -Condition ((Get-ChildItem -LiteralPath $strictSizeOut -Filter *.png -File).Count -ge 1) -Message "Strict-size output image was not detected."
+
+    $strictMismatchOut = Join-Path $testRoot "strict-size-mismatch-output"
+    Invoke-HelperExpectFailure -Arguments @(
+        "-Prompt", "strict mismatch mock image",
+        "-CodexCommand", $mockCommand,
+        "-OutDir", $strictMismatchOut,
+        "-RequestedSize", "3840x2160",
+        "-RequireExactSize",
+        "-TimeoutSeconds", "30",
+        "-PollSeconds", "1",
+        "-StableSeconds", "0"
+    )
 
     $fallbackOut = Join-Path $testRoot "fallback-output"
     $env:MOCK_CODEX_MODE = "fallback"

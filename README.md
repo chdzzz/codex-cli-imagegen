@@ -68,6 +68,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
   -CheckOnly
 ```
 
+Request and verify native 4K landscape output:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
+  -Prompt "A cinematic beach vacation photo, no text, no watermark." `
+  -OutDir "D:\codex\1\generated-images" `
+  -RequestedSize "3840x2160" `
+  -RequireExactSize
+```
+
 ## Notes
 
 - This skill is for Codex CLI image generation. Direct OpenAI API image generation still requires `OPENAI_API_KEY`.
@@ -76,6 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
 - The helper passes `--skip-git-repo-check` by default so it can run from ordinary folders; pass `-NoSkipGitRepoCheck` to preserve Codex's trust check.
 - Codex sometimes writes generated images under `$CODEX_HOME\generated_images` instead of the requested directory. The helper scans that fallback location and copies new image files into `-OutDir`.
 - If `codex exec` generates an image but does not exit, the helper polls for new stable image files every 5 seconds by default, stops the process tree once files are detected, and treats those files as the result. Override with `-PollSeconds`, `-StableSeconds`, `-NoEarlyExitOnImage`, or `-TimeoutSeconds`.
+- For native 4K requests, use `-RequestedSize "3840x2160" -RequireExactSize`. The helper requests that size through `$imagegen` and validates the saved image metadata. If Codex CLI returns a smaller fixed native size, the helper reports the mismatch instead of silently treating an upscale as native 4K.
 
 Run the mock test suite without calling the real Codex service:
 
