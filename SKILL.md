@@ -15,7 +15,7 @@ Use Codex CLI's built-in image generation flow for user-facing image creation wh
 - Do not ask the user to paste OAuth callback URLs, auth codes, bearer tokens, session files, or API keys into chat.
 - For one-off images, prefer the bundled helper script because it resolves multiple Codex CLI install layouts and copies generated images out of `$CODEX_HOME/generated_images` when Codex ignores the requested output folder.
 - If calling `codex exec` directly, put Codex global flags before `exec`, put `--skip-git-repo-check` after `exec`, and quote `$imagegen` with single quotes or escape the dollar sign as `` `$imagegen ``.
-- If PATH resolves to a WindowsApps/AppX `codex.exe` that returns "Access is denied", try the user-level Codex CLI under `$env:LOCALAPPDATA\OpenAI\Codex\bin` before asking the user to reinstall.
+- If PATH resolves to a WindowsApps/AppX `codex.exe` that returns "Access is denied", try user-level, standalone, and `$CODEX_HOME/packages/standalone` Codex CLI paths before asking the user to reinstall.
 - For bulk or production image generation, recommend direct OpenAI API usage with an API key. The CLI OAuth path is best for occasional interactive generation.
 
 ## Quick Start
@@ -31,9 +31,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
 The helper searches these locations before falling back to `codex` on PATH:
 
 - `$env:CODEX_CLI` and `$env:CODEX_COMMAND`
+- `$CODEX_HOME/packages/standalone/current/...`
+- newest `$CODEX_HOME/packages/standalone/releases/*/...`
 - `$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe`
 - newest `$env:LOCALAPPDATA\OpenAI\Codex\bin\*\codex.exe`
 - `$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe`
+- `~/.local/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, and `/usr/bin/codex`
 - `codex` from PATH
 
 2. If not signed in, start OAuth login with the resolved CLI:
@@ -77,11 +80,14 @@ Important options:
 - `-WorkDir`: working directory for `codex exec`.
 - `-ApprovalPolicy`: Codex global approval policy; defaults to `never` for non-interactive runs.
 - `-Sandbox`: Codex global sandbox mode; defaults to `workspace-write`.
-- `-TimeoutSeconds`: maximum wait for non-interactive `codex exec`; defaults to `900`, then scans for generated images and stops the process tree.
+- `-TimeoutSeconds`: maximum wait for non-interactive `codex exec`; defaults to `900`.
+- `-PollSeconds`: polling interval while `codex exec` is still running; defaults to `5`.
+- `-StableSeconds`: minimum age for a detected image before copying/returning it; defaults to `3`.
+- `-NoEarlyExitOnImage`: do not stop `codex exec` when stable image files are detected before process exit.
 - `-NoSkipGitRepoCheck`: do not pass `--skip-git-repo-check`.
 - `-NoGeneratedImagesFallback`: do not scan/copy from `$CODEX_HOME/generated_images`.
 
-If PowerShell refuses to run `.ps1` files, invoke the script with `powershell -NoProfile -ExecutionPolicy Bypass -File <script> ...`. This bypass is process-local and does not change the user's machine policy.
+If PowerShell refuses to run `.ps1` files, invoke the script with `powershell -NoProfile -ExecutionPolicy Bypass -File <script> ...`. This bypass is process-local and does not change the user's machine policy. On macOS/Linux, use `pwsh -File <script> ...`.
 
 If the script reports no new files, inspect the CLI output. Codex may have saved the file elsewhere, the image generation may still be in progress, or the model may need a more explicit save-path instruction.
 

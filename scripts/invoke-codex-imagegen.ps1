@@ -20,6 +20,12 @@ param(
 
     [int]$TimeoutSeconds = 900,
 
+    [int]$PollSeconds = 5,
+
+    [int]$StableSeconds = 3,
+
+    [switch]$NoEarlyExitOnImage,
+
     [switch]$NoSkipGitRepoCheck,
 
     [switch]$NoGeneratedImagesFallback,
@@ -29,6 +35,51 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Test-IsWindows {
+    return ($env:OS -eq "Windows_NT" -or [System.IO.Path]::DirectorySeparatorChar -eq "\")
+}
+
+function Get-HomeDirectory {
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return $env:USERPROFILE
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($HOME)) {
+        return $HOME
+    }
+
+    return [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+}
+
+function Get-FullPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$BaseDirectory = (Get-Location).Path
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
+}
+
+function Test-SamePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right
+    )
+
+    $trimChars = [char[]]@([char]92, [char]47)
+    $leftFull = (Get-FullPath -Path $Left).TrimEnd($trimChars)
+    $rightFull = (Get-FullPath -Path $Right).TrimEnd($trimChars)
+    if (Test-IsWindows) {
+        return $leftFull -ieq $rightFull
+    }
+
+    return $leftFull -ceq $rightFull
+}
 
 function Get-ImageFiles {
     param([Parameter(Mandatory = $true)][string]$Directory)
@@ -47,11 +98,12 @@ function Get-CodexHome {
         return $env:CODEX_HOME
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        return (Join-Path $env:USERPROFILE ".codex")
+    $homeDir = Get-HomeDirectory
+    if (-not [string]::IsNullOrWhiteSpace($homeDir)) {
+        return (Join-Path $homeDir ".codex")
     }
 
-    return (Join-Path $HOME ".codex")
+    return ".codex"
 }
 
 function Add-Candidate {
@@ -69,6 +121,36 @@ function Add-Candidate {
 
     if (-not $Candidates.Contains($Value)) {
         $Candidates.Add($Value) | Out-Null
+    }
+}
+
+function Add-CodexStandaloneCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$Candidates,
+
+        [string]$Root
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Root)) {
+        return
+    }
+
+    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages\standalone\current\bin\codex.exe")
+    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages\standalone\current\codex.exe")
+    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages/standalone/current/bin/codex")
+    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages/standalone/current/codex")
+
+    $releasesDir = Join-Path $Root "packages\standalone\releases"
+    if (Test-Path -LiteralPath $releasesDir -PathType Container) {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $releasesDir -Directory -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending)) {
+            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "bin\codex.exe")
+            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "codex.exe")
+            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "bin/codex")
+            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "codex")
+        }
     }
 }
 
@@ -132,6 +214,17 @@ function Resolve-CodexCommand {
     Add-Candidate -Candidates $candidates -Value $env:CODEX_CLI
     Add-Candidate -Candidates $candidates -Value $env:CODEX_COMMAND
 
+    $codexHome = Get-CodexHome
+    Add-CodexStandaloneCandidates -Candidates $candidates -Root $codexHome
+
+    $homeDir = Get-HomeDirectory
+    if (-not [string]::IsNullOrWhiteSpace($homeDir)) {
+        Add-CodexStandaloneCandidates -Candidates $candidates -Root (Join-Path $homeDir ".codex")
+        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".local/bin/codex")
+        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".codex/bin/codex")
+        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".codex\bin\codex.exe")
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         $versionedBin = Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin"
         if (Test-Path -LiteralPath $versionedBin -PathType Container) {
@@ -146,6 +239,13 @@ function Resolve-CodexCommand {
         Add-Candidate -Candidates $candidates -Value (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin\codex.exe")
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        Add-Candidate -Candidates $candidates -Value (Join-Path $env:ProgramFiles "OpenAI\Codex\bin\codex.exe")
+    }
+
+    Add-Candidate -Candidates $candidates -Value "/opt/homebrew/bin/codex"
+    Add-Candidate -Candidates $candidates -Value "/usr/local/bin/codex"
+    Add-Candidate -Candidates $candidates -Value "/usr/bin/codex"
     Add-Candidate -Candidates $candidates -Value "codex"
 
     foreach ($candidate in $candidates) {
@@ -181,15 +281,115 @@ function Get-UniqueDestination {
     throw "Could not choose a destination filename for '$FileName'."
 }
 
+function Test-StableImageFile {
+    param(
+        [Parameter(Mandatory = $true)]$File,
+        [int]$StableSeconds = 3
+    )
+
+    try {
+        $File.Refresh()
+    } catch {
+        return $false
+    }
+
+    if ($File.Length -le 0) {
+        return $false
+    }
+
+    if ($StableSeconds -le 0) {
+        return $true
+    }
+
+    return (((Get-Date) - $File.LastWriteTime).TotalSeconds -ge $StableSeconds)
+}
+
+function Test-NewImageCandidate {
+    param(
+        [Parameter(Mandatory = $true)]$File,
+        [Parameter(Mandatory = $true)][hashtable]$Before,
+        [Parameter(Mandatory = $true)][datetime]$Started,
+        [int]$StableSeconds = 3
+    )
+
+    if ($Before.ContainsKey($File.FullName)) {
+        return $false
+    }
+
+    if ($File.LastWriteTime -lt $Started.AddSeconds(-2)) {
+        return $false
+    }
+
+    return (Test-StableImageFile -File $File -StableSeconds $StableSeconds)
+}
+
+function Get-NewResultFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][hashtable]$Before,
+        [Parameter(Mandatory = $true)][datetime]$Started,
+        [string[]]$FallbackDirectories = @(),
+        [int]$StableSeconds = 3
+    )
+
+    $newFiles = New-Object System.Collections.Generic.List[object]
+
+    foreach ($file in @(Get-ImageFiles -Directory $OutputDirectory)) {
+        if (Test-NewImageCandidate -File $file -Before $Before -Started $Started -StableSeconds $StableSeconds) {
+            $Before[$file.FullName] = $true
+            $newFiles.Add($file) | Out-Null
+        }
+    }
+
+    foreach ($directory in $FallbackDirectories) {
+        if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory)) {
+            continue
+        }
+
+        if (Test-SamePath -Left $directory -Right $OutputDirectory) {
+            continue
+        }
+
+        foreach ($file in @(Get-ImageFiles -Directory $directory)) {
+            if (-not (Test-NewImageCandidate -File $file -Before $Before -Started $Started -StableSeconds $StableSeconds)) {
+                continue
+            }
+
+            $destination = Get-UniqueDestination -Directory $OutputDirectory -FileName $file.Name
+            Copy-Item -LiteralPath $file.FullName -Destination $destination
+            $Before[$file.FullName] = $true
+            $Before[$destination] = $true
+            $newFiles.Add((Get-Item -LiteralPath $destination)) | Out-Null
+        }
+    }
+
+    return $newFiles.ToArray()
+}
+
 function Stop-ProcessTree {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
 
-    try {
-        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)) {
-            Stop-ProcessTree -ProcessId $child.ProcessId
+    if (Test-IsWindows) {
+        $taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+        if ($taskkill) {
+            try {
+                & $taskkill.Source /PID $ProcessId /T /F *> $null
+                return
+            } catch {
+                Write-Verbose "taskkill failed for ${ProcessId}: $($_.Exception.Message)"
+            }
         }
-    } catch {
-        Write-Verbose "Could not enumerate child processes for ${ProcessId}: $($_.Exception.Message)"
+    }
+
+    $getCim = Get-Command Get-CimInstance -ErrorAction SilentlyContinue
+    if ($getCim) {
+        try {
+            foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)) {
+                Stop-ProcessTree -ProcessId $child.ProcessId
+            }
+        } catch {
+            Write-Verbose "Could not enumerate child processes for ${ProcessId}: $($_.Exception.Message)"
+        }
     }
 
     try {
@@ -199,48 +399,133 @@ function Stop-ProcessTree {
     }
 }
 
+function Join-CommandLineArguments {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $escapedArgs = foreach ($arg in $Arguments) {
+        $text = [string]$arg
+        if ($text.Length -eq 0) {
+            '""'
+        } elseif ($text -notmatch '[\s"]') {
+            $text
+        } else {
+            $escaped = $text -replace '(\\*)"', '$1$1\"'
+            $escaped = $escaped -replace '(\\+)$', '$1$1'
+            '"' + $escaped + '"'
+        }
+    }
+
+    return ($escapedArgs -join " ")
+}
+
+function Set-ProcessArguments {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$ProcessStartInfo,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($ProcessStartInfo.PSObject.Properties.Name -contains "ArgumentList") {
+        foreach ($argument in $Arguments) {
+            $ProcessStartInfo.ArgumentList.Add($argument)
+        }
+    } else {
+        $ProcessStartInfo.Arguments = Join-CommandLineArguments -Arguments $Arguments
+    }
+}
+
+function Set-ProcessUtf8Input {
+    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$ProcessStartInfo)
+
+    if ($ProcessStartInfo.PSObject.Properties.Name -contains "StandardInputEncoding") {
+        $ProcessStartInfo.StandardInputEncoding = New-Object System.Text.UTF8Encoding($false)
+    }
+}
+
 function Invoke-CodexWithStdin {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$InputText,
         [Parameter(Mandatory = $true)][string]$Directory,
-        [int]$TimeoutSeconds = 900
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][hashtable]$Before,
+        [Parameter(Mandatory = $true)][datetime]$Started,
+        [string[]]$FallbackDirectories = @(),
+        [int]$TimeoutSeconds = 900,
+        [int]$PollSeconds = 5,
+        [int]$StableSeconds = 3,
+        [switch]$NoEarlyExitOnImage
     )
+
+    if ($PollSeconds -lt 1) {
+        $PollSeconds = 1
+    }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Command
-    $psi.Arguments = ($Arguments -join " ")
+    Set-ProcessArguments -ProcessStartInfo $psi -Arguments $Arguments
     $psi.WorkingDirectory = $Directory
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $false
     $psi.RedirectStandardError = $false
+    Set-ProcessUtf8Input -ProcessStartInfo $psi
 
     $process = [System.Diagnostics.Process]::Start($psi)
-    $process.StandardInput.Write($InputText)
-    $process.StandardInput.Close()
+    try {
+        $process.StandardInput.Write($InputText)
+        $process.StandardInput.Close()
 
-    if ($TimeoutSeconds -gt 0) {
-        if (-not $process.WaitFor($TimeoutSeconds * 1000)) {
-            Write-Warning "Codex CLI timed out after $TimeoutSeconds seconds. Stopping the process and scanning for generated images."
-            Stop-ProcessTree -ProcessId $process.Id
-            return [pscustomobject]@{ ExitCode = 124; TimedOut = $true }
+        $deadline = $null
+        if ($TimeoutSeconds -gt 0) {
+            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         }
-    } else {
-        $process.WaitForExit()
-    }
 
-    return [pscustomobject]@{ ExitCode = $process.ExitCode; TimedOut = $false }
+        while (-not $process.HasExited) {
+            Start-Sleep -Seconds $PollSeconds
+
+            if (-not $NoEarlyExitOnImage) {
+                $detectedFiles = @(Get-NewResultFiles `
+                        -OutputDirectory $OutputDirectory `
+                        -Before $Before `
+                        -Started $Started `
+                        -FallbackDirectories $FallbackDirectories `
+                        -StableSeconds $StableSeconds)
+
+                if ($detectedFiles.Count -gt 0) {
+                    Write-Warning "Detected generated image file(s) before Codex CLI exited. Stopping Codex CLI and treating detected files as the result."
+                    Stop-ProcessTree -ProcessId $process.Id
+                    return [pscustomobject]@{ ExitCode = 0; TimedOut = $false; EarlyResult = $true; Files = $detectedFiles }
+                }
+            }
+
+            if ($deadline -and (Get-Date) -ge $deadline) {
+                Write-Warning "Codex CLI timed out after $TimeoutSeconds seconds. Stopping the process and scanning for generated images."
+                Stop-ProcessTree -ProcessId $process.Id
+                return [pscustomobject]@{ ExitCode = 124; TimedOut = $true; EarlyResult = $false; Files = @() }
+            }
+        }
+
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; TimedOut = $false; EarlyResult = $false; Files = @() }
+    } finally {
+        $process.Dispose()
+    }
 }
 
 $codex = Resolve-CodexCommand -ExplicitCommand $CodexCommand
 $CodexCommand = $codex.Path
 
-New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-$resolvedOutDir = (Resolve-Path -LiteralPath $OutDir).Path
 $resolvedWorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
-$generatedImagesDir = Join-Path (Get-CodexHome) "generated_images"
+$resolvedOutDir = Get-FullPath -Path $OutDir
+if (-not $CheckOnly) {
+    New-Item -ItemType Directory -Path $resolvedOutDir -Force | Out-Null
+    $resolvedOutDir = (Resolve-Path -LiteralPath $resolvedOutDir).Path
+}
+
+$generatedImagesDirs = @()
+if (-not $NoGeneratedImagesFallback) {
+    $generatedImagesDirs += (Join-Path (Get-CodexHome) "generated_images")
+}
 
 Write-Host "Codex CLI: $CodexCommand"
 if ($codex.Version) {
@@ -263,7 +548,9 @@ if ($CheckOnly) {
         Write-Warning "Could not check login status: $($_.Exception.Message)"
     }
     if (-not $NoGeneratedImagesFallback) {
-        Write-Host "Generated-images fallback: $generatedImagesDir"
+        foreach ($directory in $generatedImagesDirs) {
+            Write-Host "Generated-images fallback: $directory"
+        }
     }
     exit 0
 }
@@ -272,8 +559,8 @@ $before = @{}
 foreach ($file in Get-ImageFiles -Directory $resolvedOutDir) {
     $before[$file.FullName] = $true
 }
-if (-not $NoGeneratedImagesFallback) {
-    foreach ($file in Get-ImageFiles -Directory $generatedImagesDir) {
+foreach ($directory in $generatedImagesDirs) {
+    foreach ($file in Get-ImageFiles -Directory $directory) {
         $before[$file.FullName] = $true
     }
 }
@@ -298,6 +585,7 @@ $started = Get-Date
 Push-Location -LiteralPath $resolvedWorkDir
 $exitCode = 0
 $timedOut = $false
+$newFiles = New-Object System.Collections.Generic.List[object]
 try {
     if ($Interactive) {
         $codexArgs = @()
@@ -313,27 +601,36 @@ try {
         $codexArgs += "exec"
         if (-not $NoSkipGitRepoCheck) { $codexArgs += "--skip-git-repo-check" }
         $codexArgs += "-"
-        $result = Invoke-CodexWithStdin -Command $CodexCommand -Arguments $codexArgs -InputText $message -Directory $resolvedWorkDir -TimeoutSeconds $TimeoutSeconds
+        $result = Invoke-CodexWithStdin `
+            -Command $CodexCommand `
+            -Arguments $codexArgs `
+            -InputText $message `
+            -Directory $resolvedWorkDir `
+            -OutputDirectory $resolvedOutDir `
+            -Before $before `
+            -Started $started `
+            -FallbackDirectories $generatedImagesDirs `
+            -TimeoutSeconds $TimeoutSeconds `
+            -PollSeconds $PollSeconds `
+            -StableSeconds $StableSeconds `
+            -NoEarlyExitOnImage:$NoEarlyExitOnImage
         $exitCode = $result.ExitCode
         $timedOut = $result.TimedOut
+        foreach ($file in @($result.Files)) {
+            $newFiles.Add($file) | Out-Null
+        }
     }
 } finally {
     Pop-Location
 }
 
-$newFiles = New-Object System.Collections.Generic.List[object]
-foreach ($file in @(Get-ImageFiles -Directory $resolvedOutDir |
-        Where-Object { -not $before.ContainsKey($_.FullName) -and $_.LastWriteTime -ge $started.AddSeconds(-2) })) {
+foreach ($file in @(Get-NewResultFiles `
+        -OutputDirectory $resolvedOutDir `
+        -Before $before `
+        -Started $started `
+        -FallbackDirectories $generatedImagesDirs `
+        -StableSeconds 0)) {
     $newFiles.Add($file) | Out-Null
-}
-
-if (-not $NoGeneratedImagesFallback) {
-    foreach ($file in @(Get-ImageFiles -Directory $generatedImagesDir |
-            Where-Object { -not $before.ContainsKey($_.FullName) -and $_.LastWriteTime -ge $started.AddSeconds(-2) })) {
-        $destination = Get-UniqueDestination -Directory $resolvedOutDir -FileName $file.Name
-        Copy-Item -LiteralPath $file.FullName -Destination $destination
-        $newFiles.Add((Get-Item -LiteralPath $destination)) | Out-Null
-    }
 }
 
 if ($newFiles.Count -eq 0) {
