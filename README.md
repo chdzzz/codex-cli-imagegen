@@ -16,7 +16,7 @@ Restart Codex so the skill metadata is reloaded.
 
 ## Prerequisites
 
-- Codex CLI is installed and runnable.
+- Codex CLI is installed and runnable. The helper can auto-detect several Windows install layouts, including the user-level Codex CLI under `%LOCALAPPDATA%\OpenAI\Codex\bin`.
 - You are logged in with ChatGPT OAuth:
 
 ```powershell
@@ -36,14 +36,24 @@ Use $codex-cli-imagegen to generate a realistic beach vacation photo and save it
 Or run the helper script directly from this repository:
 
 ```powershell
-.\scripts\invoke-codex-imagegen.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
   -Prompt "A realistic beach vacation photo with white sand, turquoise water, umbrellas, lounge chairs, and palm trees" `
   -OutDir "D:\codex\1\generated-images" `
   -LoginFirst
+```
+
+Check the local environment without generating an image:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
+  -Prompt "check only" `
+  -CheckOnly
 ```
 
 ## Notes
 
 - This skill is for Codex CLI image generation. Direct OpenAI API image generation still requires `OPENAI_API_KEY`.
 - In PowerShell, wrap `$imagegen` prompts in single quotes or escape the dollar sign as `` `$imagegen ``.
-- If a Windows Store/AppX Codex launcher returns `Access is denied`, install the standalone Codex CLI and use its executable path.
+- If a Windows Store/AppX Codex launcher returns `Access is denied`, the helper skips it and tries user-level Codex CLI paths. You can also pass `-CodexCommand "C:\path\to\codex.exe"`.
+- The helper passes `--skip-git-repo-check` by default so it can run from ordinary folders; pass `-NoSkipGitRepoCheck` to preserve Codex's trust check.
+- Codex sometimes writes generated images under `$CODEX_HOME\generated_images` instead of the requested directory. The helper scans that fallback location and copies new image files into `-OutDir`.
