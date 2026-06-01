@@ -57,3 +57,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
 - If a Windows Store/AppX Codex launcher returns `Access is denied`, the helper skips it and tries user-level Codex CLI paths. You can also pass `-CodexCommand "C:\path\to\codex.exe"`.
 - The helper passes `--skip-git-repo-check` by default so it can run from ordinary folders; pass `-NoSkipGitRepoCheck` to preserve Codex's trust check.
 - Codex sometimes writes generated images under `$CODEX_HOME\generated_images` instead of the requested directory. The helper scans that fallback location and copies new image files into `-OutDir`.
+- If `codex exec` generates an image but does not exit, the helper times out after 900 seconds by default, stops the process tree, scans for new generated images, and treats detected files as the result. Override with `-TimeoutSeconds`.
