@@ -13,24 +13,36 @@ Use Codex CLI's built-in image generation flow for user-facing image creation wh
 
 - Use this only for Codex CLI image generation. For direct API calls with `client.images.generate(model="gpt-image-2", ...)`, require `OPENAI_API_KEY` instead.
 - Do not ask the user to paste OAuth callback URLs, auth codes, bearer tokens, session files, or API keys into chat.
-- For one-off images, prefer `codex exec` with a prompt containing `$imagegen`. In PowerShell, quote `$imagegen` with single quotes or escape the dollar sign as `` `$imagegen ``.
-- If the local `codex` executable is unavailable or returns WindowsApps "Access is denied", report that the installed launcher is not executable from the current shell and ask the user to run the command in their interactive terminal or install/fix Codex CLI.
+- For one-off images, prefer the bundled helper script because it resolves multiple Codex CLI install layouts and copies generated images out of `$CODEX_HOME/generated_images` when Codex ignores the requested output folder.
+- If calling `codex exec` directly, put Codex global flags before `exec`, put `--skip-git-repo-check` after `exec`, and quote `$imagegen` with single quotes or escape the dollar sign as `` `$imagegen ``.
+- If PATH resolves to a WindowsApps/AppX `codex.exe` that returns "Access is denied", try the user-level Codex CLI under `$env:LOCALAPPDATA\OpenAI\Codex\bin` before asking the user to reinstall.
 - For bulk or production image generation, recommend direct OpenAI API usage with an API key. The CLI OAuth path is best for occasional interactive generation.
 
 ## Quick Start
 
-1. Check that Codex CLI is runnable:
+1. Run the helper's environment check:
 
 ```powershell
-$codex = "$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe"
-if (-not (Test-Path $codex)) { $codex = "codex" }
-& $codex --help
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
+  -Prompt "check only" `
+  -CheckOnly
 ```
 
-2. If not signed in, start OAuth login:
+The helper searches these locations before falling back to `codex` on PATH:
+
+- `$env:CODEX_CLI` and `$env:CODEX_COMMAND`
+- `$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe`
+- newest `$env:LOCALAPPDATA\OpenAI\Codex\bin\*\codex.exe`
+- `$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe`
+- `codex` from PATH
+
+2. If not signed in, start OAuth login with the resolved CLI:
 
 ```powershell
-& $codex login
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
+  -Prompt "check only" `
+  -LoginFirst `
+  -CheckOnly
 ```
 
 Let the browser flow complete locally. Never paste the callback URL into the conversation.
@@ -38,18 +50,21 @@ Let the browser flow complete locally. Never paste the callback URL into the con
 3. Generate an image from PowerShell:
 
 ```powershell
-& $codex exec '$imagegen Generate a square app icon: a glassy blue butterfly on a clean white background. Save the final image under D:\codex\1\generated-images and print the path.'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-imagegen.ps1 `
+  -Prompt "A glassy blue butterfly app icon on a clean white background. No text, no watermark." `
+  -OutDir "D:\codex\1\generated-images"
 ```
 
-4. Use the helper script when a stable output folder and basic result detection are useful:
+4. Direct `codex exec` fallback when the helper is unavailable:
 
 ```powershell
-.\scripts\invoke-codex-imagegen.ps1 -Prompt "A glassy blue butterfly app icon on a clean white background" -OutDir "D:\codex\1\generated-images"
+$codex = "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
+& $codex -a never -s workspace-write exec --skip-git-repo-check '$imagegen Generate a square app icon: a glassy blue butterfly on a clean white background. Save the final image under D:\codex\1\generated-images and print the path.'
 ```
 
 ## Helper Script
 
-Use `scripts/invoke-codex-imagegen.ps1` from this skill directory. It creates the output directory, builds a `$imagegen` prompt, runs `codex exec`, and prints any new image files it finds in the output directory.
+Use `scripts/invoke-codex-imagegen.ps1` from this skill directory. It creates the output directory, builds a `$imagegen` prompt, runs `codex exec`, scans both the requested output directory and `$CODEX_HOME/generated_images`, copies fallback images into the requested output directory, and prints created paths.
 
 Important options:
 
@@ -58,8 +73,16 @@ Important options:
 - `-LoginFirst`: run `codex login` before generation.
 - `-CodexCommand`: alternate executable path or command name.
 - `-Interactive`: use `codex "<prompt>"` instead of `codex exec "<prompt>"` for older CLI builds.
+- `-CheckOnly`: resolve Codex CLI, print version/login diagnostics, and do not generate an image.
+- `-WorkDir`: working directory for `codex exec`.
+- `-ApprovalPolicy`: Codex global approval policy; defaults to `never` for non-interactive runs.
+- `-Sandbox`: Codex global sandbox mode; defaults to `workspace-write`.
+- `-NoSkipGitRepoCheck`: do not pass `--skip-git-repo-check`.
+- `-NoGeneratedImagesFallback`: do not scan/copy from `$CODEX_HOME/generated_images`.
 
-If the script reports no new files, inspect the CLI output. Codex may have saved the file elsewhere or may need a more explicit save-path instruction.
+If PowerShell refuses to run `.ps1` files, invoke the script with `powershell -NoProfile -ExecutionPolicy Bypass -File <script> ...`. This bypass is process-local and does not change the user's machine policy.
+
+If the script reports no new files, inspect the CLI output. Codex may have saved the file elsewhere, the image generation may still be in progress, or the model may need a more explicit save-path instruction.
 
 ## Prompt Pattern
 
@@ -77,8 +100,10 @@ When the user wants several variants, ask Codex CLI for a small fixed number and
 
 ## Failure Handling
 
-- `codex` not found: tell the user Codex CLI is not installed or not on `PATH`.
-- `Access is denied` from `C:\Program Files\WindowsApps\...`: tell the user this Windows packaged launcher cannot be executed from the current shell; use the user's terminal or a non-Store Codex CLI installation.
+- `codex` not found: run the helper with `-CheckOnly`; if no candidate works, tell the user Codex CLI is not installed or pass `-CodexCommand`.
+- `Access is denied` from `C:\Program Files\WindowsApps\...`: use the helper's auto-discovery or pass `-CodexCommand "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"` / the newest versioned `...\bin\*\codex.exe`.
+- PowerShell blocks the helper script: re-run with `powershell -NoProfile -ExecutionPolicy Bypass -File`.
+- `Not inside a trusted directory`: use the helper default, which passes `--skip-git-repo-check`; for direct calls, add `--skip-git-repo-check` after `exec`.
 - Login requested or expired: run `codex login`; the user completes OAuth in the browser.
 - `$imagegen` disappears in PowerShell output: the prompt used double quotes and PowerShell expanded `$imagegen` as a variable. Re-run with single quotes or escape the dollar sign.
-- No output image found: make the save directory absolute, ask Codex CLI to print paths, and check the CLI transcript.
+- No output image found: make the save directory absolute, scan `$CODEX_HOME/generated_images`, ask Codex CLI to print paths only, and check the CLI transcript.
