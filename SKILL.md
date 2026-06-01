@@ -91,6 +91,8 @@ If PowerShell refuses to run `.ps1` files, invoke the script with `powershell -N
 
 If the script reports no new files, inspect the CLI output. Codex may have saved the file elsewhere, the image generation may still be in progress, or the model may need a more explicit save-path instruction.
 
+After changing the helper, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-helper-tests.ps1` on Windows or `pwsh -File ./tests/run-helper-tests.ps1` on macOS/Linux. The mock suite does not call the real Codex service.
+
 ## Prompt Pattern
 
 Include the deliverable, visual style, format, and save location in the same CLI prompt:

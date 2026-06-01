@@ -65,6 +65,20 @@ function Get-FullPath {
     return [System.IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
 }
 
+function Join-PathParts {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string[]]$Parts
+    )
+
+    $path = $Root
+    foreach ($part in $Parts) {
+        $path = Join-Path $path $part
+    }
+
+    return $path
+}
+
 function Test-SamePath {
     param(
         [Parameter(Mandatory = $true)][string]$Left,
@@ -137,18 +151,18 @@ function Add-CodexStandaloneCandidates {
         return
     }
 
-    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages\standalone\current\bin\codex.exe")
-    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages\standalone\current\codex.exe")
-    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages/standalone/current/bin/codex")
-    Add-Candidate -Candidates $Candidates -Value (Join-Path $Root "packages/standalone/current/codex")
+    Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $Root -Parts @("packages", "standalone", "current", "bin", "codex.exe"))
+    Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $Root -Parts @("packages", "standalone", "current", "codex.exe"))
+    Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $Root -Parts @("packages", "standalone", "current", "bin", "codex"))
+    Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $Root -Parts @("packages", "standalone", "current", "codex"))
 
-    $releasesDir = Join-Path $Root "packages\standalone\releases"
+    $releasesDir = Join-PathParts -Root $Root -Parts @("packages", "standalone", "releases")
     if (Test-Path -LiteralPath $releasesDir -PathType Container) {
         foreach ($dir in @(Get-ChildItem -LiteralPath $releasesDir -Directory -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending)) {
-            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "bin\codex.exe")
+            Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $dir.FullName -Parts @("bin", "codex.exe"))
             Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "codex.exe")
-            Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "bin/codex")
+            Add-Candidate -Candidates $Candidates -Value (Join-PathParts -Root $dir.FullName -Parts @("bin", "codex"))
             Add-Candidate -Candidates $Candidates -Value (Join-Path $dir.FullName "codex")
         }
     }
@@ -220,13 +234,13 @@ function Resolve-CodexCommand {
     $homeDir = Get-HomeDirectory
     if (-not [string]::IsNullOrWhiteSpace($homeDir)) {
         Add-CodexStandaloneCandidates -Candidates $candidates -Root (Join-Path $homeDir ".codex")
-        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".local/bin/codex")
-        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".codex/bin/codex")
-        Add-Candidate -Candidates $candidates -Value (Join-Path $homeDir ".codex\bin\codex.exe")
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $homeDir -Parts @(".local", "bin", "codex"))
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $homeDir -Parts @(".codex", "bin", "codex"))
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $homeDir -Parts @(".codex", "bin", "codex.exe"))
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        $versionedBin = Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin"
+        $versionedBin = Join-PathParts -Root $env:LOCALAPPDATA -Parts @("OpenAI", "Codex", "bin")
         if (Test-Path -LiteralPath $versionedBin -PathType Container) {
             foreach ($file in @(Get-ChildItem -LiteralPath $versionedBin -Directory -ErrorAction SilentlyContinue |
                     ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter "codex.exe" -File -ErrorAction SilentlyContinue } |
@@ -235,12 +249,12 @@ function Resolve-CodexCommand {
             }
         }
 
-        Add-Candidate -Candidates $candidates -Value (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
-        Add-Candidate -Candidates $candidates -Value (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin\codex.exe")
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $env:LOCALAPPDATA -Parts @("OpenAI", "Codex", "bin", "codex.exe"))
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $env:LOCALAPPDATA -Parts @("Programs", "OpenAI", "Codex", "bin", "codex.exe"))
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
-        Add-Candidate -Candidates $candidates -Value (Join-Path $env:ProgramFiles "OpenAI\Codex\bin\codex.exe")
+        Add-Candidate -Candidates $candidates -Value (Join-PathParts -Root $env:ProgramFiles -Parts @("OpenAI", "Codex", "bin", "codex.exe"))
     }
 
     Add-Candidate -Candidates $candidates -Value "/opt/homebrew/bin/codex"
@@ -366,6 +380,61 @@ function Get-NewResultFiles {
     return $newFiles.ToArray()
 }
 
+function Get-ChildProcessIds {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $ids = New-Object System.Collections.Generic.List[int]
+
+    if (Test-IsWindows) {
+        $getCim = Get-Command Get-CimInstance -ErrorAction SilentlyContinue
+        if ($getCim) {
+            try {
+                foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)) {
+                    if ($child.ProcessId -and $child.ProcessId -ne $ProcessId) {
+                        $ids.Add([int]$child.ProcessId) | Out-Null
+                    }
+                }
+            } catch {
+                Write-Verbose "Could not enumerate child processes for ${ProcessId}: $($_.Exception.Message)"
+            }
+        }
+
+        return $ids.ToArray()
+    }
+
+    $pgrep = Get-Command pgrep -ErrorAction SilentlyContinue
+    if ($pgrep) {
+        try {
+            foreach ($line in @(& $pgrep.Source -P $ProcessId 2> $null)) {
+                $childId = 0
+                if ([int]::TryParse(([string]$line).Trim(), [ref]$childId) -and $childId -ne $ProcessId) {
+                    $ids.Add($childId) | Out-Null
+                }
+            }
+
+            return $ids.ToArray()
+        } catch {
+            Write-Verbose "pgrep failed for ${ProcessId}: $($_.Exception.Message)"
+        }
+    }
+
+    $ps = Get-Command ps -ErrorAction SilentlyContinue
+    if ($ps) {
+        try {
+            foreach ($line in @(& $ps.Source -o pid= -ppid $ProcessId 2> $null)) {
+                $childId = 0
+                if ([int]::TryParse(([string]$line).Trim(), [ref]$childId) -and $childId -ne $ProcessId) {
+                    $ids.Add($childId) | Out-Null
+                }
+            }
+        } catch {
+            Write-Verbose "ps child process lookup failed for ${ProcessId}: $($_.Exception.Message)"
+        }
+    }
+
+    return $ids.ToArray()
+}
+
 function Stop-ProcessTree {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
 
@@ -381,15 +450,8 @@ function Stop-ProcessTree {
         }
     }
 
-    $getCim = Get-Command Get-CimInstance -ErrorAction SilentlyContinue
-    if ($getCim) {
-        try {
-            foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)) {
-                Stop-ProcessTree -ProcessId $child.ProcessId
-            }
-        } catch {
-            Write-Verbose "Could not enumerate child processes for ${ProcessId}: $($_.Exception.Message)"
-        }
+    foreach ($childId in @(Get-ChildProcessIds -ProcessId $ProcessId)) {
+        Stop-ProcessTree -ProcessId $childId
     }
 
     try {

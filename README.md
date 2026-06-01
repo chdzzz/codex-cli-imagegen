@@ -22,6 +22,16 @@ git clone https://github.com/chdzzz/codex-cli-imagegen.git "$HOME/.codex/skills/
 
 Restart Codex so the skill metadata is reloaded.
 
+To update an existing install:
+
+```powershell
+git -C "$env:USERPROFILE\.codex\skills\codex-cli-imagegen" pull --ff-only
+```
+
+```bash
+git -C "$HOME/.codex/skills/codex-cli-imagegen" pull --ff-only
+```
+
 ## Prerequisites
 
 - Codex CLI is installed and runnable. The helper can auto-detect common Windows, macOS, Linux, and standalone Codex CLI install layouts.
@@ -71,4 +81,10 @@ Run the mock test suite without calling the real Codex service:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-helper-tests.ps1
+```
+
+On macOS/Linux:
+
+```bash
+pwsh -File ./tests/run-helper-tests.ps1
 ```
