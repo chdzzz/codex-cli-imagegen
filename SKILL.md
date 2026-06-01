@@ -77,6 +77,7 @@ Important options:
 - `-WorkDir`: working directory for `codex exec`.
 - `-ApprovalPolicy`: Codex global approval policy; defaults to `never` for non-interactive runs.
 - `-Sandbox`: Codex global sandbox mode; defaults to `workspace-write`.
+- `-TimeoutSeconds`: maximum wait for non-interactive `codex exec`; defaults to `900`, then scans for generated images and stops the process tree.
 - `-NoSkipGitRepoCheck`: do not pass `--skip-git-repo-check`.
 - `-NoGeneratedImagesFallback`: do not scan/copy from `$CODEX_HOME/generated_images`.
 
