@@ -20,7 +20,9 @@ param(
 
     [string]$ApprovalPolicy = "never",
 
-    [string]$Sandbox = "workspace-write",
+    [string]$Sandbox = "danger-full-access",
+
+    [bool]$DisablePlugins = $true,
 
     [int]$TimeoutSeconds = 900,
 
@@ -29,6 +31,10 @@ param(
     [int]$StableSeconds = 3,
 
     [switch]$NoEarlyExitOnImage,
+
+    [string]$ChildCodexHome = "",
+
+    [switch]$NoIsolatedCodexHome,
 
     [switch]$NoSkipGitRepoCheck,
 
@@ -117,7 +123,7 @@ function ConvertFrom-BigEndianUInt16 {
         [Parameter(Mandatory = $true)][int]$Offset
     )
 
-    return (($Bytes[$Offset] -shl 8) -bor $Bytes[$Offset + 1])
+    return ((([int]$Bytes[$Offset]) -shl 8) -bor ([int]$Bytes[$Offset + 1]))
 }
 
 function ConvertFrom-BigEndianUInt32 {
@@ -126,7 +132,7 @@ function ConvertFrom-BigEndianUInt32 {
         [Parameter(Mandatory = $true)][int]$Offset
     )
 
-    return (($Bytes[$Offset] -shl 24) -bor ($Bytes[$Offset + 1] -shl 16) -bor ($Bytes[$Offset + 2] -shl 8) -bor $Bytes[$Offset + 3])
+    return ((([int]$Bytes[$Offset]) -shl 24) -bor (([int]$Bytes[$Offset + 1]) -shl 16) -bor (([int]$Bytes[$Offset + 2]) -shl 8) -bor ([int]$Bytes[$Offset + 3]))
 }
 
 function ConvertFrom-LittleEndianUInt24 {
@@ -135,7 +141,7 @@ function ConvertFrom-LittleEndianUInt24 {
         [Parameter(Mandatory = $true)][int]$Offset
     )
 
-    return ($Bytes[$Offset] -bor ($Bytes[$Offset + 1] -shl 8) -bor ($Bytes[$Offset + 2] -shl 16))
+    return (([int]$Bytes[$Offset]) -bor (([int]$Bytes[$Offset + 1]) -shl 8) -bor (([int]$Bytes[$Offset + 2]) -shl 16))
 }
 
 function Get-ImageDimensions {
@@ -260,6 +266,61 @@ function Get-CodexHome {
     }
 
     return ".codex"
+}
+
+function Initialize-ChildCodexHome {
+    param(
+        [Parameter(Mandatory = $true)][string]$ParentCodexHome,
+        [string]$RequestedChildCodexHome,
+        [switch]$NoIsolated
+    )
+
+    if ($NoIsolated) {
+        return (Get-FullPath -Path $ParentCodexHome)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RequestedChildCodexHome)) {
+        $RequestedChildCodexHome = Join-Path $ParentCodexHome ".codex-cli-imagegen-isolated-home"
+    }
+
+    New-Item -ItemType Directory -Path $RequestedChildCodexHome -Force | Out-Null
+    $resolvedChildCodexHome = (Resolve-Path -LiteralPath $RequestedChildCodexHome).Path
+
+    $authPath = Join-Path $ParentCodexHome "auth.json"
+    if (Test-Path -LiteralPath $authPath -PathType Leaf) {
+        Copy-Item -LiteralPath $authPath -Destination (Join-Path $resolvedChildCodexHome "auth.json") -Force
+    }
+
+    $configPath = Join-Path $resolvedChildCodexHome "config.toml"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        @"
+[features]
+image_generation = true
+"@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+    }
+
+    return $resolvedChildCodexHome
+}
+
+function Invoke-CodexCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$CodexHome
+    )
+
+    $oldCodexHome = $env:CODEX_HOME
+    try {
+        $env:CODEX_HOME = $CodexHome
+        & $Command @Arguments
+        return $LASTEXITCODE
+    } finally {
+        if ($null -eq $oldCodexHome) {
+            Remove-Item Env:\CODEX_HOME -ErrorAction SilentlyContinue
+        } else {
+            $env:CODEX_HOME = $oldCodexHome
+        }
+    }
 }
 
 function Add-Candidate {
@@ -654,6 +715,7 @@ function Invoke-CodexWithStdin {
         [Parameter(Mandatory = $true)][string]$OutputDirectory,
         [Parameter(Mandatory = $true)][hashtable]$Before,
         [Parameter(Mandatory = $true)][datetime]$Started,
+        [Parameter(Mandatory = $true)][string]$CodexHome,
         [string[]]$FallbackDirectories = @(),
         [int]$TimeoutSeconds = 900,
         [int]$PollSeconds = 5,
@@ -673,6 +735,7 @@ function Invoke-CodexWithStdin {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $false
     $psi.RedirectStandardError = $false
+    $psi.EnvironmentVariables["CODEX_HOME"] = $CodexHome
     Set-ProcessUtf8Input -ProcessStartInfo $psi
 
     $process = [System.Diagnostics.Process]::Start($psi)
@@ -722,6 +785,8 @@ $CodexCommand = $codex.Path
 $resolvedWorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 $resolvedOutDir = Get-FullPath -Path $OutDir
 $requestedDimensions = Resolve-RequestedDimensions -RequestedSize $RequestedSize -Prompt $Prompt
+$parentCodexHome = Get-CodexHome
+$childCodexHomeResolved = Initialize-ChildCodexHome -ParentCodexHome $parentCodexHome -RequestedChildCodexHome $ChildCodexHome -NoIsolated:$NoIsolatedCodexHome
 if (-not $CheckOnly) {
     New-Item -ItemType Directory -Path $resolvedOutDir -Force | Out-Null
     $resolvedOutDir = (Resolve-Path -LiteralPath $resolvedOutDir).Path
@@ -729,7 +794,7 @@ if (-not $CheckOnly) {
 
 $generatedImagesDirs = @()
 if (-not $NoGeneratedImagesFallback) {
-    $generatedImagesDirs += (Join-Path (Get-CodexHome) "generated_images")
+    $generatedImagesDirs += (Join-Path $childCodexHomeResolved "generated_images")
 }
 
 Write-Host "Codex CLI: $CodexCommand"
@@ -738,20 +803,21 @@ if ($codex.Version) {
 }
 Write-Host "Output directory: $resolvedOutDir"
 Write-Host "Working directory: $resolvedWorkDir"
+Write-Host "Child CODEX_HOME: $childCodexHomeResolved"
 if ($requestedDimensions) {
     Write-Host "Requested native size: $($requestedDimensions.Text)"
 }
 
 if ($LoginFirst) {
-    & $CodexCommand login
-    if ($LASTEXITCODE -ne 0) {
-        throw "codex login failed with exit code $LASTEXITCODE."
+    $loginExitCode = Invoke-CodexCommand -Command $CodexCommand -Arguments @("login") -CodexHome $childCodexHomeResolved
+    if ($loginExitCode -ne 0) {
+        throw "codex login failed with exit code $loginExitCode."
     }
 }
 
 if ($CheckOnly) {
     try {
-        & $CodexCommand login status
+        [void](Invoke-CodexCommand -Command $CodexCommand -Arguments @("login", "status") -CodexHome $childCodexHomeResolved)
     } catch {
         Write-Warning "Could not check login status: $($_.Exception.Message)"
     }
@@ -809,13 +875,14 @@ $newFiles = New-Object System.Collections.Generic.List[object]
 try {
     if ($Interactive) {
         $codexArgs = @()
+        if ($DisablePlugins) { $codexArgs += @("--disable", "plugins") }
         if (-not [string]::IsNullOrWhiteSpace($ApprovalPolicy)) { $codexArgs += @("-a", $ApprovalPolicy) }
         if (-not [string]::IsNullOrWhiteSpace($Sandbox)) { $codexArgs += @("-s", $Sandbox) }
         $codexArgs += $message
-        & $CodexCommand @codexArgs
-        $exitCode = $LASTEXITCODE
+        $exitCode = Invoke-CodexCommand -Command $CodexCommand -Arguments $codexArgs -CodexHome $childCodexHomeResolved
     } else {
         $codexArgs = @()
+        if ($DisablePlugins) { $codexArgs += @("--disable", "plugins") }
         if (-not [string]::IsNullOrWhiteSpace($ApprovalPolicy)) { $codexArgs += @("-a", $ApprovalPolicy) }
         if (-not [string]::IsNullOrWhiteSpace($Sandbox)) { $codexArgs += @("-s", $Sandbox) }
         $codexArgs += "exec"
@@ -829,6 +896,7 @@ try {
             -OutputDirectory $resolvedOutDir `
             -Before $before `
             -Started $started `
+            -CodexHome $childCodexHomeResolved `
             -FallbackDirectories $generatedImagesDirs `
             -TimeoutSeconds $TimeoutSeconds `
             -PollSeconds $PollSeconds `

@@ -84,6 +84,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
 - In PowerShell, wrap `$imagegen` prompts in single quotes or escape the dollar sign as `` `$imagegen ``.
 - If a Windows Store/AppX Codex launcher returns `Access is denied`, the helper skips it and tries user-level Codex CLI paths. You can also pass `-CodexCommand "C:\path\to\codex.exe"`.
 - The helper passes `--skip-git-repo-check` by default so it can run from ordinary folders; pass `-NoSkipGitRepoCheck` to preserve Codex's trust check.
+- The helper defaults to `-Sandbox danger-full-access` because nested Codex CLI image generation can fail in the Windows sandbox with `spawn setup refresh`.
+- The helper creates an isolated child `CODEX_HOME` by default and copies `auth.json` into it. This prevents nested Codex CLI runs from loading this same skill and recursively invoking the helper. Pass `-NoIsolatedCodexHome` only for diagnostics.
+- The helper passes `--disable plugins` by default to avoid remote plugin sync noise and rate-limit failures during generation. Pass `-DisablePlugins:$false` only when a plugin is explicitly required.
 - Codex sometimes writes generated images under `$CODEX_HOME\generated_images` instead of the requested directory. The helper scans that fallback location and copies new image files into `-OutDir`.
 - If `codex exec` generates an image but does not exit, the helper polls for new stable image files every 5 seconds by default, stops the process tree once files are detected, and treats those files as the result. Override with `-PollSeconds`, `-StableSeconds`, `-NoEarlyExitOnImage`, or `-TimeoutSeconds`.
 - For native 4K requests, use `-RequestedSize "3840x2160" -RequireExactSize`. The helper requests that size through `$imagegen` and validates the saved image metadata. If Codex CLI returns a smaller fixed native size, the helper reports the mismatch instead of silently treating an upscale as native 4K.

@@ -14,6 +14,7 @@ Use Codex CLI's built-in image generation flow for user-facing image creation wh
 - Use this only for Codex CLI image generation. For direct API calls with `client.images.generate(model="gpt-image-2", ...)`, require `OPENAI_API_KEY` instead.
 - Do not ask the user to paste OAuth callback URLs, auth codes, bearer tokens, session files, or API keys into chat.
 - For one-off images, prefer the bundled helper script because it resolves multiple Codex CLI install layouts and copies generated images out of `$CODEX_HOME/generated_images` when Codex ignores the requested output folder.
+- The helper runs the child Codex CLI with an isolated child `CODEX_HOME` by default. This prevents the nested CLI from loading this same `codex-cli-imagegen` skill and recursively invoking itself, while still copying `auth.json` so ChatGPT OAuth login works.
 - If calling `codex exec` directly, put Codex global flags before `exec`, put `--skip-git-repo-check` after `exec`, and quote `$imagegen` with single quotes or escape the dollar sign as `` `$imagegen ``.
 - If PATH resolves to a WindowsApps/AppX `codex.exe` that returns "Access is denied", try user-level, standalone, and `$CODEX_HOME/packages/standalone` Codex CLI paths before asking the user to reinstall.
 - For bulk or production image generation, recommend direct OpenAI API usage with an API key. The CLI OAuth path is best for occasional interactive generation.
@@ -62,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-codex-image
 
 ```powershell
 $codex = "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
-& $codex -a never -s workspace-write exec --skip-git-repo-check '$imagegen Generate a square app icon: a glassy blue butterfly on a clean white background. Save the final image under D:\codex\1\generated-images and print the path.'
+& $codex --disable plugins -a never -s danger-full-access exec --skip-git-repo-check '$imagegen Generate a square app icon: a glassy blue butterfly on a clean white background. Save the final image under D:\codex\1\generated-images and print the path.'
 ```
 
 ## Helper Script
@@ -81,11 +82,14 @@ Important options:
 - `-RequireExactSize`: fail when generated images do not match the requested native pixel size.
 - `-WorkDir`: working directory for `codex exec`.
 - `-ApprovalPolicy`: Codex global approval policy; defaults to `never` for non-interactive runs.
-- `-Sandbox`: Codex global sandbox mode; defaults to `workspace-write`.
+- `-Sandbox`: Codex global sandbox mode; defaults to `danger-full-access` because nested Codex CLI image generation can fail in the Windows sandbox with `spawn setup refresh`.
+- `-DisablePlugins`: pass `--disable plugins` to the child CLI; defaults to `true` to avoid remote plugin sync noise and rate-limit failures during generation.
 - `-TimeoutSeconds`: maximum wait for non-interactive `codex exec`; defaults to `900`.
 - `-PollSeconds`: polling interval while `codex exec` is still running; defaults to `5`.
 - `-StableSeconds`: minimum age for a detected image before copying/returning it; defaults to `3`.
 - `-NoEarlyExitOnImage`: do not stop `codex exec` when stable image files are detected before process exit.
+- `-ChildCodexHome`: alternate child `CODEX_HOME` path for the nested CLI.
+- `-NoIsolatedCodexHome`: reuse the parent `CODEX_HOME`; only use for debugging because it can re-load this skill inside the nested CLI and recurse.
 - `-NoSkipGitRepoCheck`: do not pass `--skip-git-repo-check`.
 - `-NoGeneratedImagesFallback`: do not scan/copy from `$CODEX_HOME/generated_images`.
 
@@ -116,6 +120,9 @@ When the user wants several variants, ask Codex CLI for a small fixed number and
 - `codex` not found: run the helper with `-CheckOnly`; if no candidate works, tell the user Codex CLI is not installed or pass `-CodexCommand`.
 - `Access is denied` from `C:\Program Files\WindowsApps\...`: use the helper's auto-discovery or pass `-CodexCommand "$env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"` / the newest versioned `...\bin\*\codex.exe`.
 - PowerShell blocks the helper script: re-run with `powershell -NoProfile -ExecutionPolicy Bypass -File`.
+- Nested CLI keeps calling this skill instead of image generation: keep the default isolated child `CODEX_HOME`; do not use `-NoIsolatedCodexHome` except for diagnostics.
+- Plugin sync or rate-limit warnings appear before generation: keep the default `-DisablePlugins $true`; pass `-DisablePlugins:$false` only when a plugin is explicitly required.
+- `windows sandbox: spawn setup refresh`: keep the default `-Sandbox danger-full-access` for the nested child CLI.
 - `Not inside a trusted directory`: use the helper default, which passes `--skip-git-repo-check`; for direct calls, add `--skip-git-repo-check` after `exec`.
 - Login requested or expired: run `codex login`; the user completes OAuth in the browser.
 - `$imagegen` disappears in PowerShell output: the prompt used double quotes and PowerShell expanded `$imagegen` as a variable. Re-run with single quotes or escape the dollar sign.

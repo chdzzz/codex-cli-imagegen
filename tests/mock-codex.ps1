@@ -1,6 +1,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [switch]$Version,
+    [string]$disable,
     [string]$a,
     [string]$s,
     [switch]${skip-git-repo-check},
@@ -23,6 +24,10 @@ function Get-OutputDirectoryFromPrompt {
 }
 
 $AllArgs = New-Object System.Collections.Generic.List[string]
+if ($PSBoundParameters.ContainsKey("disable")) {
+    $AllArgs.Add("--disable") | Out-Null
+    $AllArgs.Add($disable) | Out-Null
+}
 if ($PSBoundParameters.ContainsKey("a")) {
     $AllArgs.Add("-a") | Out-Null
     $AllArgs.Add($a) | Out-Null
